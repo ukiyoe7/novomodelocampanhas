@@ -1,6 +1,5 @@
 ## CAMPANHAS MODELO
 
-
 ## LOAD ============================================================================================
 
 library(DBI)
@@ -24,29 +23,39 @@ BASE_PARTICIPANTES <- read_excel("C:\\Users\\REPRO SANDRO\\Documents\\CAMPANHAS\
 
 pedidos <- dbGetQuery(con2, statement = read_file('PEDIDOS.sql')) %>% mutate(PROCODIGO=trimws(PROCODIGO))
 
-
 promo <- dbGetQuery(con2, statement = read_file('PROMO.sql')) %>% mutate(PROMO=as.integer(PROMO))
 
-pedidos_2 <-
-  left_join(pedidos,promo,by="ID_PEDIDO") %>% mutate(PROMO=if_else(is.na(PROMO),1,0))
-
-
 modelos <- dbGetQuery(con2, statement = read_file('MODELOS_CAMPANHAS.sql')) %>% mutate(PROCODIGO=trimws(PROCODIGO))
+
+## PROMO EM DOBRO ====================================
+
+
+pedidos_2 <- left_join(pedidos,promo,by="ID_PEDIDO") %>% mutate(PROMO=if_else(is.na(PROMO),1,0))
+
 
 ## BASE CAMPANHAS ACTIVE =========================
 
 
-BASE_CAMPANHAS2 <- BASE_CAMPANHAS %>% mutate(CAMPANHA2= str_extract(Modelo, "^[^0-9]+ [0-9]+")) 
+BASE_CAMPANHAS2 <- 
+  
+rbind(  
+  ## grupos
+  inner_join(
+  BASE_CAMPANHAS %>% 
+  filter (ifelse(if_else(is.na(`Data Final Prorrogação`),`Data Final`,`Data Final Prorrogação`) >= ceiling_date(Sys.Date()-months(1), "month") - days(1), 1, 0)==1) %>% 
+    mutate(CAMPANHA_MODELO= str_extract(Modelo, "^[^0-9]+ [0-9]+")) %>% filter(grepl("Modelo [1-5]", CAMPANHA_MODELO)) %>% filter(!is.na(GCLCODIGO)) %>% select(-CLICODIGO)
+  ,
+  dbGetQuery(con2,"SELECT CLICODIGO,GCLCODIGO FROM CLIEN WHERE CLICLIENTE='S'"),
+  by="GCLCODIGO") %>%  .[,c(1,14,3:ncol(.)-1)] 
+  
+, 
+## lojas 
+  BASE_CAMPANHAS %>% 
+   filter (ifelse(if_else(is.na(`Data Final Prorrogação`),`Data Final`,`Data Final Prorrogação`) >= ceiling_date(Sys.Date()-months(1), "month") - days(1), 1, 0)==1) %>% 
+    mutate(CAMPANHA_MODELO= str_extract(Modelo, "^[^0-9]+ [0-9]+")) %>% 
+     filter(grepl("Modelo [1-5]", CAMPANHA_MODELO)) %>% filter(is.na(GCLCODIGO)) 
+)
 
-BASE_CAMPANHAS3 <- 
-  rbind(
-    inner_join(
-      BASE_CAMPANHAS2 %>% filter(!is.na(GCLCODIGO)) %>% select(-CLICODIGO),
-      # get all client codes
-      dbGetQuery(con2,"SELECT CLICODIGO,GCLCODIGO FROM CLIEN WHERE CLICLIENTE='S'"),
-      by="GCLCODIGO")%>% .[,c(1,13,3:ncol(.)-1)],
-    BASE_CAMPANHAS2 %>% filter(is.na(GCLCODIGO)) ) %>% 
-  filter (ifelse(if_else(is.na(`Data Final Prorrogação`),`Data Final`,`Data Final Prorrogação`) >= ceiling_date(Sys.Date()-months(1), "month") - days(1), 1, 0)==1)
 
 
 ##  PRODUCTS =============================== 
@@ -57,14 +66,14 @@ pedidos_class1 <-
     inner_join(pedidos_2,modelos %>% distinct(PROCODIGO),by=c("PROCODIGO"))
     
     ,modelos,by=c("PROCODIGO")) %>% 
-  mutate(ID_PEDIDO=as.numeric(ID_PEDIDO)) %>% mutate(CAMPANHA2= str_extract(CAMPANHA, "^[^0-9]+ [0-9]+"))
+  mutate(ID_PEDIDO=as.numeric(ID_PEDIDO)) %>% mutate(CAMPANHA_MODELO= str_extract(CAMPANHA, "^[^0-9]+ [0-9]+"))
 
 
 ##  WITHIN DATE AND CAMPANHA =============================== 
 
 
 pedidos_class2 <-
-  left_join(pedidos_class1,BASE_CAMPANHAS3 %>% select(-GCLCODIGO),by=c("CLICODIGO","CAMPANHA2")) %>% 
+  left_join(pedidos_class1,BASE_CAMPANHAS2 %>% select(-GCLCODIGO),by=c("CLICODIGO","CAMPANHA_MODELO")) %>% 
   mutate(DATA_DENTRO=ifelse(PEDDTBAIXA >= `Data Início` & PEDDTBAIXA <= if_else(is.na(`Data Final Prorrogação`),`Data Final`,`Data Final Prorrogação`), 1, 0))
 
 
@@ -75,10 +84,6 @@ ped_param <- data.frame(
   VENDA = 1,
   PROMO=1,
   QTD = 2,
-  ORIGEM_WEB2 = 1,
-  VENDA2 = 1,
-  PROMO2=1,
-  QTD2 = 2,
   PED_PARAM = 1
 )
 
@@ -100,11 +105,34 @@ pedidos_class4 <-
 
 
 
-##  CLASSIFICATION FINAL =============================== 
+##  CLASSIFICATION PARAM =============================== 
 
 pedidos_class5 <-
-  pedidos_class4 %>% mutate(PAGAMENTO=if_else(DATA_DENTRO==1&PED_PARAM==1&!is.na(CPF),1,0)) 
+  pedidos_class4 %>% mutate(PAGAMENTO=if_else(DATA_DENTRO==1&PED_PARAM==1&!is.na(CPF),1,NA_character_)) 
 
 
-View(pedidos_class5)  
+##  CLASSIFICATION REJECT =============================== 
+
+
+pedidos_class6 <-
+pedidos_class5 %>%
+  mutate(NAO_BONIFICA = if_else(
+    is.na(PAGAMENTO) | PAGAMENTO==0 ,
+    case_when(
+      VENDA == 0 ~ "NÃO É CFOP DE VENDA",
+      ORIGEM_WEB == 0 ~ "NÃO É ORIGEM WEB",
+      QTD == 1 ~ "NÃO É PAR",
+      PROMO == 0 ~ "SEGUNDO PAR PROMO EM DOBRO",
+      TRUE ~ "PEDIDO NÃO IDENTIFICADO"
+    ),
+    NA_character_  
+  )) 
+
+
+View(pedidos_class6)
+
+
+
+
+
 
